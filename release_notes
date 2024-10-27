@@ -1,0 +1,249 @@
+"""
+This module create release notes based on one line gitlog. 
+
+"""
+__version__ = '0.3'
+__author__ = 'Sanju Koli'
+
+import os
+import re
+import getpass
+import argparse
+from jira import JIRA
+from time import localtime, strftime
+import urllib3
+
+# to disable SSL certificate warting 
+urllib3.disable_warnings()
+
+JIRA_URL = 'https://jira.com/' # Jira server url
+REL_NOTES_FILE_NAME = "release_notes.html"
+LOG_FILE_NAME = 'debug_info.csv'
+
+
+"""  
+use command to get git log
+git log --oneline --pretty=format:"%s" <yourlasttag>..HEAD > gitlog.txt 
+OR
+git log --oneline  --pretty=format:"%s" $(git describe --tag --abbrev=0)..HEAD > gitlog.txt
+
+# last 3 tags on master branch
+git log --simplify-by-decoration --decorate --pretty=oneline "master" | fgrep 'tag:' | head -n 3
+"""
+
+def parse_gitlog(gitlog):
+    """Parse git log file and return list of issues mentioned in git log"""
+    print("Parsing git log")
+    issue_list = []
+    try: 
+        f = open(gitlog, 'r')
+        lines = f.readlines()
+        for line in lines:
+            issues = re.findall(r"\[(.*?)\]", line)
+            for issue in issues:
+                if issue not in issue_list:
+                    issue_list.append(issue)
+    
+    except FileNotFoundError:
+        print("git log file not found !!")
+        
+    return issue_list
+
+def cleanup(s):
+    #s = unicodedata.normalize('NFKD', s)
+    #s = s.encode('ascii', 'ignore')
+    s = s.replace(u'\xa0', u' ')
+    s = s.replace(u'\xA0', u' ')
+    s = s.replace(u'\x93', u'"')
+    s = s.replace(u'\x94', u'"')
+    return s
+    
+def get_parent_labels(jira_handle, key):
+    data = jira_handle.issue(key, fields='summary, description, issuetype, resolution, status, labels, parent')
+    return data.fields.labels
+    
+    
+def get_data_from_jira(jira_handle, issue_list, labels):
+    print("Fetching data from Jira...")
+    res = {}
+    bugs = {}
+    issues = {}
+    filtered_out = {}
+    bugs_count = 0
+    issues_count = 0
+    filtered_out_count = 0
+    
+    for key in issue_list:
+        d = {}
+        data = jira_handle.issue(key, fields='summary, description, issuetype, resolution, status, labels, parent')
+        d['summary'] = data.fields.summary
+        d['status'] = data.fields.status.name.title()
+        d['issuetype'] = data.fields.issuetype.name.title()
+        if d['issuetype'] == "Sub-Task":
+            d['parent_labels'] = get_parent_labels(jira_handle, data.fields.parent.key)
+        else:
+            d['parent_labels'] = []
+            
+        d['labels'] = data.fields.labels
+        
+            
+        if data.fields.description:
+            d['description'] = data.fields.description
+        else:
+            d['description'] = "None"
+        if data.fields.resolution:
+            d['resolution'] = data.fields.resolution.description
+            d['resolution_state'] = data.fields.resolution.name.title()
+        else:
+            d['resolution'] = "None"
+            d['resolution_state'] = "Unknown"
+
+        if labels:      # apply filtering based on labels
+            val = list(set(labels) & set(data.fields.labels +d['parent_labels']))
+            if len(val) == 0:
+                filtered_out[key] = d
+                filtered_out_count += 1
+                continue
+        
+            
+        if d['issuetype'] == 'Bug':
+            bugs[key] = d
+            bugs_count += 1 
+        else:
+            issues[key] = d
+            issues_count += 1
+            
+    res['bugs'] = bugs
+    res['issues'] = issues
+    res['bugs_count'] = bugs_count
+    res['issues_count'] = issues_count
+    res['filtered_out'] = filtered_out
+    res['filtered_out_count'] = filtered_out_count
+    
+    return res
+
+def write_list(f, data):
+    print("Writing list of issues/bugs to release notes")
+    f.write('<ol>\n')
+    for key, val in data.items():
+        f.write('<li><a href="#%s">[%s]</a>  %s</li>\n' %(key, key, val['summary']))
+    f.write('</ol>\n')
+    f.write('<br>\n')
+           
+def write_details(f, data):
+    print("Writing details on issues/bugs to release notes")
+    for key, val in data.items():
+        f.write('<section id="%s">\n' %(key))
+        f.write('<div class="summary">[%s] %s</div>\n' %(key, cleanup(val['summary'])))
+        f.write('<h4>Description:</h4>\n')
+        f.write('<pre>%s</pre>\n' %cleanup(val['description']))
+        f.write('<h4>Resolution: <span>%s</span></h4>\n' %val['resolution_state'])
+        f.write('<pre>%s</pre>\n' %cleanup(val['resolution']))
+        f.write('</section>\n' )
+        f.write('<br>\n')        
+    f.write('<br>\n')
+
+
+def add_css_style(f):
+    f.write('<style>\n')
+    f.write('body {font-family: system-ui, Helvetica, sans-serif;}\n')
+    f.write('ol {list-style: none; padding-left: 20px;}\n')
+    f.write('li {margin-bottom: 5px;}\n')
+    f.write('li > a {margin-right: 10px; font-weight: 500;}\n')
+    f.write('section {border: solid #000000A1; border-radius: 5px;}\n')
+    f.write('.summary {border-bottom: solid; padding: 10px; background:#000000A1;color: ghostwhite;}\n')
+    f.write('pre {white-space: pre-wrap;}\n')
+    f.write('h4, pre {padding-left: 10px;}\n')
+    f.write('h3 {background: #000000B1; color: ghostwhite; padding: 8px 12px;}\n')
+    f.write('a {color: inherit; text-decoration: none;}\n')
+    f.write('h4 > span {font-size: 13px; font-weight: 700; background: #0D6EFD; color: #FFFFFF; border-radius: 4px; padding: 0px 10px;}\n')
+    f.write('</style>\n')
+      
+def create_release_notes(data, path):
+    print("Creating Release notes")
+    filepath = os.path.join(path, REL_NOTES_FILE_NAME)
+    
+    f = open(filepath, 'w')
+    f.write('<html lang="en">\n')
+    f.write('<head>\n')
+    f.write('<meta charset="UTF-8">\n')
+    f.write('<meta http-equiv="X-UA-Compatible" content="IE=edge">\n')
+    f.write('<meta name="viewport" content="width=device-width, initial-scale=1.0">\n')
+    f.write('<title>Release Notes</title>\n')
+    
+    add_css_style(f)
+    
+    f.write('</head>\n')
+    f.write('<body>\n')
+    
+    f.write('<h3><a href="#issues">%d Issues Fixed in this Release</a></h3>\n'%data['issues_count'])
+    write_list(f, data['issues'])
+    
+    f.write('<h3><a href="#bugs">%d Bugs Fixed in this Release</a></h3>\n'%data['bugs_count'])
+    write_list(f, data['bugs'])
+     
+    f.write('<h3 id="issues">Issues Details:</h3>\n')
+    write_details(f, data['issues'])
+    
+    f.write('<h3 id="bugs">Bugs Details:</h3>\n')
+    write_details(f, data['bugs'])
+    
+    f.write('</body>\n')
+    f.write('</html>\n')
+    f.close()
+    print ("Release notes created at " + filepath)
+    
+def create_logfile(data, path):
+    print("Creating debug info")
+    timestamp = strftime("%Y%m%d_%H%M%S",localtime())
+    filename = timestamp + '_' + LOG_FILE_NAME
+    filepath = os.path.join(path, filename)
+    f = open(filepath, 'w')
+    f.write("IssueId;IssueType;Status;Resolution;Summary;Labels;Parent Labels\n")
+    for key, val in data['issues'].items():
+        f.write('%s;%s;%s;%s;%s;%s;%s\n' %(key, val['issuetype'], val['status'], val['resolution_state'], val['summary'], val['labels'], val['parent_labels']))
+    for key, val in data['bugs'].items():
+        f.write('%s;%s;%s;%s;%s;%s;%s\n' %(key, val['issuetype'], val['status'], val['resolution_state'], val['summary'], val['labels'], val['parent_labels']))
+    f.write("\n-------------Filtered Out Issues/ Bugs-------------\n")    
+    for key, val in data['filtered_out'].items():
+        f.write('%s;%s;%s;%s;%s;%s;%s\n' %(key, val['issuetype'], val['status'], val['resolution_state'], val['summary'], val['labels'], val['parent_labels']))    
+    f.close()
+    print ("Debug info created at " + filepath)
+    
+    
+def main(user, passwd, gitlog, path='.', debug_info=False, labels=None): 
+    issue_list = parse_gitlog(gitlog)
+    try:
+        jira_handle = JIRA(options = {'server': JIRA_URL, 'verify': False}, basic_auth=(user, passwd))
+    except:
+        print("login to Jira failed!! please check username/password")
+        exit(1)
+        
+    data = get_data_from_jira(jira_handle, issue_list, labels)
+    create_release_notes(data, path)
+    if debug_info:
+        create_logfile(data, path)
+       
+
+if "__main__" == __name__:
+    
+    def list_of_strings(arg):
+        return arg.split(',')
+    parser = argparse.ArgumentParser(prog='python relase_notes.py',
+                                     description='It create release notes based on gitlog file',
+                                     epilog='gitlog can be created using cmd git log --oneline --pretty=format:"%s" <yourlasttag>..HEAD > gitlog.txt')
+    
+    #parser.add_argument('username', help='user name to be used to log in into git and Jira')
+    #parser.add_argument('password', help='password associated with user to login into git and Jira')
+    parser.add_argument('gitlog', help='git log file conatining one liner git log')
+    parser.add_argument('-p', '--path', help='path, where release_notes shall be saved, otherwise it will be saved in current folder', default='.')
+    parser.add_argument('-d', '--debug_info', action='store_true', help='create debug/log file (csv format) with some extra info')
+    parser.add_argument('-l', '--labels', help='list of lables(comma seperated without space) to be used to filter issues/bugs', default=None, type=list_of_strings)
+    args = parser.parse_args()
+    #print(args)
+    user = getpass.getuser()
+    print ('User Name: %s' %user )
+    password = getpass.getpass(prompt='Password :')
+    
+    main(user, password, args.gitlog, args.path, args.debug_info, args.labels)
+    
