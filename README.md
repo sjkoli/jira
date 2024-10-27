@@ -44,3 +44,30 @@ In case you need to know what tags are put on your branch, you can use below git
 
 ## Last 3 tags on master branch
     git log --simplify-by-decoration --decorate --pretty=oneline "master" | fgrep 'tag:' | head -n 3
+
+
+=========================================================================================================
+=========================================================================================================
+
+# Road map kind of view in excel
+This is my first attempt to create jira backlog roadmap view in excel sheet
+
+## Dependency
+    pip install jira
+    pip install XlsxWriter 
+ 
+## How to run
+    usage: python roadmap.py [-h] [-p PATH] project_key
+
+    It creates jira backlog roadmap view in excel sheet
+    positional arguments:
+        project_key           Jira project key 
+    options:
+        -h, --help            show this help message and exit
+        -p PATH, --path PATH  path, where excel sheet shall be saved, otherwise it will be saved in current folder
+
+    python roadmap.py project_key
+
+## Output
+    Roadmap view  will be created in excel sheet  in current folder if -p option is not used
+    
