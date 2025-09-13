@@ -4,7 +4,7 @@ Expeaction is that we create epics and stories in JIRA and link them together.
 all estimations are done on Stories in hours.
 Epics can also have the estimations, if case epics is not broken down into stories yet.
 """
-__version__ = '0.1'
+__version__ = '0.2'
 __author__ = 'Sanju Koli'
 
 import os
@@ -20,6 +20,7 @@ import xlsxwriter
 urllib3.disable_warnings()
 
 JIRA_URL = 'https://jira.com/'  # jira server url
+PAT = "Copy your PAT here" 
 link =  JIRA_URL + 'browse/' # + issue key
 hours_per_day = 7.5
 sorting = 'ASC'     #sorting ASC or DESC
@@ -34,7 +35,7 @@ def write_to_excel(project, epics, epic_issues):
 
     timestamp = strftime("%Y%m%d",localtime())
     filename = '%s_%s.xlsx'%(project['name'], timestamp)
-    filepath = os.path.join(args.path, filename)
+    filepath = os.path.join(folder_path, filename)
     
     workbook = xlsxwriter.Workbook(filepath)  # create excel file
     worksheet = workbook.add_worksheet(project['name'])  # create worksheet
@@ -246,6 +247,14 @@ def main(jira):
     get_epics_issues(jira)
 
 
+def login_to_jira_using_PAT():
+    try:
+        jira = JIRA(server=JIRA_URL, token_auth=PAT, kerberos=True)
+        return jira
+    except:
+        print("login to Jira failed!! please check PAT is not expired")
+        exit(1)
+"""        
 def login_to_jira(url, user, password):
     try:
         jira = JIRA(options = {'server': JIRA_URL, 'verify': False}, basic_auth=(user, password))
@@ -253,30 +262,40 @@ def login_to_jira(url, user, password):
     except:
         print("login to Jira failed!! please check username/password")
         exit(1)
-
+"""
 
 if "__main__" == __name__:
     
     def list_of_strings(arg):
         return arg.split(',')
-    parser = argparse.ArgumentParser(prog='python roadmap.py <project_key>',
+    parser = argparse.ArgumentParser(prog='python roadmap.py',
                                      description='It create roadmap view in excel sheet'
                                      )
-    
+    group = parser.add_mutually_exclusive_group(required=True)
     #parser.add_argument('username', help='user name to be used to log in into git and Jira')
     #parser.add_argument('password', help='password associated with user to login into git and Jira')
     parser.add_argument('project_key', help='project whose roadmap is to be created')
-    parser.add_argument('-p', '--path', help='path, where roadmap shall be saved', default='.')
+    group.add_argument('-p', '--path', help='absolute path')
+    group.add_argument('-o', '--oneDrive', help='relative path to oneDrive')
  
     args = parser.parse_args()
-    user = getpass.getuser()
-    print ('User Name: %s' %user )
-    password = getpass.getpass(prompt='Password :')
     
-    jira =  login_to_jira(JIRA_URL, user, password)
+    #user = getpass.getuser()
+    #print ('User Name: %s' %user )
+    #password = getpass.getpass(prompt='Password :')
+    #jira =  login_to_jira(JIRA_URL, user, password)
+    
+    jira =  login_to_jira_using_PAT()
+    
+    if args.path:
+        folder_path = args.path         
 
-    if not os.path.exists(args.path):
-        os.makedirs(args.path)
+    if args.oneDrive: 
+        onedrive_path = os.environ.get("OneDrive")
+        folder_path = os.path.join(onedrive_path, args.oneDrive)
+
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
 
     main(jira)
    
